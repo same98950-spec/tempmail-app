@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TempMail • Mail.tm</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1020;color:#f4f7ff;min-height:100vh}
+.wrap{max-width:760px;margin:auto;padding:24px}.card{background:#121a2d;border:1px solid #293452;border-radius:22px;padding:22px;box-shadow:0 18px 50px #0005}
+h1{margin:0 0 6px;font-size:28px}.sub{color:#9eabc8;margin:0 0 20px}
+.row{display:flex;gap:10px}.email{flex:1;background:#0b1120;border:1px solid #34415f;border-radius:14px;padding:15px;font-size:16px;overflow:auto}
+button,select{background:transparent;color:#dce6ff;border:1px solid #6b7da8;border-radius:12px;padding:12px 15px;cursor:pointer;transition:.18s}
+button:hover{transform:translateY(-1px);border-color:#9fb4ee;background:#17213a}button:active{transform:scale(.96)}
+.primary{border-color:#6e8cff;background:#263b8a}.controls{display:flex;gap:10px;flex-wrap:wrap;margin:15px 0}
+.status{font-size:13px;color:#9eabc8;margin:12px 0}.msg{border:1px solid #293452;border-radius:16px;padding:16px;margin:10px 0;background:#0e1527;cursor:pointer}
+.msg b{display:block}.from{color:#8fa2ce;font-size:13px}.empty{text-align:center;color:#8492b1;padding:35px 10px}
+pre{white-space:pre-wrap;word-break:break-word;background:#080d18;padding:15px;border-radius:12px;color:#dbe4ff}
+#modal{display:none;position:fixed;inset:0;background:#0009;padding:20px;align-items:center;justify-content:center}.modalbox{max-width:700px;width:100%;max-height:85vh;overflow:auto;background:#121a2d;border:1px solid #34415f;border-radius:20px;padding:20px}
+.close{float:right}.small{font-size:12px;color:#8290ad;margin-top:20px}
+@media(max-width:520px){.wrap{padding:12px}.card{padding:16px}.row{flex-direction:column}.row button{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="card">
+<h1>📨 TempMail</h1>
+<p class="sub">Free temporary email powered by Mail.tm</p>
+
+<div class="row">
+<div id="email" class="email">Generating email…</div>
+<button onclick="copyEmail()">Copy</button>
+</div>
+
+<div class="controls">
+<button class="primary" onclick="newMailbox()">＋ New Email</button>
+<button onclick="loadMessages()">↻ Refresh Inbox</button>
+</div>
+
+<div id="status" class="status">Connecting to Mail.tm…</div>
+<div id="inbox"><div class="empty">No messages yet.</div></div>
+<div class="small">Your mailbox exists only while the Mail.tm account remains available. Do not use temporary email for important/private accounts.</div>
+</div>
+</div>
+
+<div id="modal">
+<div class="modalbox">
+<button class="close" onclick="closeModal()">✕</button>
+<h2 id="mtitle">Message</h2>
+<div id="mmeta" class="from"></div>
+<hr>
+<div id="mbody"></div>
+</div>
+</div>
+
+<script>
+const API='https://api.mail.tm';
+let account=null, token=null;
+
+function setStatus(t){document.getElementById('status').textContent=t}
+function esc(s=''){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+
+async function api(path,opts={}){
+  const r=await fetch(API+path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});
+  if(!r.ok) throw new Error((await r.text())||r.statusText);
+  return r.json();
+}
+
+async function newMailbox(){
+ try{
+  setStatus('Creating temporary email…');
+  document.getElementById('email').textContent='Generating…';
+  document.getElementById('inbox').innerHTML='<div class="empty">Loading…</div>';
+  const d=await api('/domains?page=1');
+  const domains=d['hydra:member']||d.member||[];
+  if(!domains.length) throw new Error('No Mail.tm domain available');
+  const domain=domains[Math.floor(Math.random()*domains.length)].domain;
+  const username='user'+Math.random().toString(36).slice(2,10);
+  const password=crypto.randomUUID()+'A9!';
+  const address=username+'@'+domain;
+  account=await api('/accounts',{method:'POST',body:JSON.stringify({address,password})});
+  const tok=await api('/token',{method:'POST',body:JSON.stringify({address,password})});
+  token=tok.token;
+  localStorage.setItem('tm_address',address);
+  localStorage.setItem('tm_password',password);
+  document.getElementById('email').textContent=address;
+  setStatus('Ready • Inbox auto-refreshes every 10 seconds');
+  await loadMessages();
+ }catch(e){
+  setStatus('Error: '+e.message);
+  document.getElementById('inbox').innerHTML='<div class="empty">Could not create mailbox.</div>';
+ }
+}
+
+async function restore(){
+ const address=localStorage.getItem('tm_address'), password=localStorage.getItem('tm_password');
+ if(!address||!password){newMailbox();return}
+ try{
+  const t=await api('/token',{method:'POST',body:JSON.stringify({address,password})});
+  token=t.token; account={address};
+  document.getElementById('email').textContent=address;
+  setStatus('Restored • Inbox auto-refreshes every 10 seconds');
+  loadMessages();
+ }catch(e){localStorage.removeItem('tm_address');localStorage.removeItem('tm_password');newMailbox()}
+}
+
+async function loadMessages(){
+ if(!token)return;
+ try{
+  const d=await api('/messages',{headers:{Authorization:'Bearer '+token}});
+  const list=d['hydra:member']||d.member||[];
+  const box=document.getElementById('inbox');
+  if(!list.length){box.innerHTML='<div class="empty">📭 Inbox is empty</div>';return}
+  box.innerHTML=list.map(m=>`
+   <div class="msg" onclick="openMessage('${m.id}')">
+    <b>${esc(m.subject||'(No subject)')}</b>
+    <div class="from">${esc(m.from?.address||'Unknown sender')} • ${new Date(m.createdAt).toLocaleString()}</div>
+   </div>`).join('');
+ }catch(e){setStatus('Inbox error: '+e.message)}
+}
+
+async function openMessage(id){
+ try{
+  const m=await api('/messages/'+id,{headers:{Authorization:'Bearer '+token}});
+  document.getElementById('mtitle').textContent=m.subject||'(No subject)';
+  document.getElementById('mmeta').textContent='From: '+(m.from?.address||'Unknown')+' • '+new Date(m.createdAt).toLocaleString();
+  let body=m.text||'';
+  if(!body && m.html) body=m.html.join ? m.html.join('\\n') : m.html;
+  document.getElementById('mbody').innerHTML='<pre>'+esc(body)+'</pre>';
+  document.getElementById('modal').style.display='flex';
+ }catch(e){alert('Could not open message: '+e.message)}
+}
+function closeModal(){document.getElementById('modal').style.display='none'}
+async function copyEmail(){
+ const e=document.getElementById('email').textContent;
+ try{await navigator.clipboard.writeText(e);setStatus('Email copied ✓')}catch{alert(e)}
+}
+restore();
+setInterval(loadMessages,10000);
+</script>
+</body>
+</html>
